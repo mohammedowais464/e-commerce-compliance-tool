@@ -1,6 +1,11 @@
 import { AppBar, Toolbar, Typography, Button, Box } from "@mui/material";
 
 const Header = () => {
+  const handleScroll = (id) => {
+    const section = document.getElementById(id);
+    section?.scrollIntoView({ behavior: "smooth" });
+  };
+
   return (
     <AppBar
       position="static"
@@ -11,25 +16,34 @@ const Header = () => {
       }}
     >
       <Toolbar sx={{ justifyContent: "space-between" }}>
-        <Typography
-          variant="h6"
-          sx={{ fontWeight: 700, color: "#2563eb" }}
-        >
-          Safe
-        </Typography>
+        
+        {/* LOGO */}
+        <Box sx={{ display: "flex", alignItems: "center" }}>
+          <Typography
+            variant="h6"
+            sx={{ fontWeight: 700, color: "#2563eb" }}
+          >
+            Safe
+          </Typography>
 
-         <Typography
-          variant="h6"
-          sx={{ fontWeight: 700, color: "#9C86D4" , ml:-153 }}
-        >
-          Buy
-        </Typography>
+          <Typography
+            variant="h6"
+            sx={{ fontWeight: 700, color: "#9C86D4" }}
+          >
+            Buy
+          </Typography>
+        </Box>
 
+        {/* NAV */}
         <Box>
-          <Button sx={{  fontSize: "16px" , color: "#475569" }} onClick={() => handleScroll("about")}>
+          <Button
+            sx={{ fontSize: "16px", color: "#475569" }}
+            onClick={() => handleScroll("about")}
+          >
             About
           </Button>
         </Box>
+
       </Toolbar>
     </AppBar>
   );
