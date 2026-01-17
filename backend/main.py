@@ -5,6 +5,7 @@ import requests
 
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from evaluator import infer_product_category
 from sqlalchemy.orm import Session
 
 from scraper import scrape_product, _fetch_html
@@ -99,6 +100,7 @@ def build_field_index(product: ProductData) -> dict:
     return field_values
 
 
+<<<<<<< HEAD
 
 def ai_normalize_product(product: ProductData) -> AiNormalizedProduct:
     """
@@ -370,6 +372,12 @@ def run_compliance_check(product: ProductData, ai_product: AiNormalizedProduct) 
     Filter rules by category from AI (electronics/food/health/all).
     """
     field_values = build_field_index_ai(product, ai_product)
+=======
+def run_compliance_check(product: ProductData) -> dict:
+    product_category = infer_product_category(product)
+    field_values = build_field_index(product)
+
+>>>>>>> 5a5c19f1d898072ecfb9197fedb2fe34be61a204
     violations: list[Violation] = []
 
     category = (ai_product.category or "all").lower()
@@ -378,6 +386,7 @@ def run_compliance_check(product: ProductData, ai_product: AiNormalizedProduct) 
     is_health = category == "health"
 
     for rule in RULES:
+<<<<<<< HEAD
         rule_id = rule["id"]
         severity = rule["severity"]
         title_text = rule["title"]
@@ -396,15 +405,39 @@ def run_compliance_check(product: ProductData, ai_product: AiNormalizedProduct) 
         if missing:
             description = f"{title_text} – missing or unclear: {', '.join(missing)}"
             suggestion = f"Ensure the following field(s) are clearly disclosed: {', '.join(missing)}."
+=======
+        rule_category = rule.get("category", "all")
+
+        # 🔥 CATEGORY FILTER (THIS IS THE FIX)
+        if rule_category != "all" and rule_category != product_category:
+            continue
+
+        missing = []
+        for f in rule.get("required_fields", []):
+            if not field_values.get(f, False):
+                missing.append(f)
+
+        if missing:
+>>>>>>> 5a5c19f1d898072ecfb9197fedb2fe34be61a204
             violations.append(
                 Violation(
-                    rule_id=rule_id,
-                    severity=severity,
-                    description=description,
-                    suggestion=suggestion,
+                    rule_id=rule["id"],
+                    severity=rule["severity"],
+                    description=(
+                        f"{rule['title']} – missing or unclear: "
+                        f"{', '.join(missing)}"
+                    ),
+                    suggestion=(
+                        f"Ensure the following field(s) are clearly disclosed: "
+                        f"{', '.join(missing)}."
+                    ),
                 )
             )
 
+<<<<<<< HEAD
+=======
+    # score calculation stays the same
+>>>>>>> 5a5c19f1d898072ecfb9197fedb2fe34be61a204
     score = 100
     for v in violations:
         if v.severity.upper() == "HIGH":
