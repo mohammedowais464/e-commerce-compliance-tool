@@ -1,11 +1,11 @@
 from datetime import datetime
 import json
 import os
-import requests
+import re
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from evaluator import infer_product_category
 from sqlalchemy.orm import Session
 
 from scraper import scrape_product, _fetch_html
@@ -20,10 +20,10 @@ from models import (
 from database import get_db, init_db, ScanRecord
 from rules import RULES
 
-from datetime import datetime
-from fastapi import FastAPI, Depends
-from sqlalchemy.orm import Session
+load_dotenv()
 
+# We still call ai_normalize_product, but it is now heuristic-only (no external AI)
+USE_AI = True
 
 
 app = FastAPI(title="Compliance API")
@@ -100,148 +100,130 @@ def build_field_index(product: ProductData) -> dict:
     return field_values
 
 
-<<<<<<< HEAD
+def parse_technical_details(tech: str) -> dict:
+    """
+    Parse 'Key: Value | Key2: Value2' style technical_details into a dict.
+    Very simple heuristic split.
+    """
+    result: dict[str, str] = {}
+    if not tech:
+        return result
+
+    # Your scraper joins entries with " | "
+    parts = [p.strip() for p in tech.split("|") if p.strip()]
+
+    for part in parts:
+        if ":" in part:
+            key, val = part.split(":", 1)
+            key = key.strip().lower()
+            val = val.strip()
+            if key and val:
+                result[key] = val
+
+    return result
+
+
+def fallback_ai(product: ProductData) -> AiNormalizedProduct:
+    """
+    Minimal normalized object if technical details are missing.
+    """
+    return AiNormalizedProduct(
+        category="all",
+        seller=product.seller,
+        price=product.price.deal if product.price else None,
+        returns=product.returns,
+        delivery=product.delivery,
+        origin=product.country_of_origin,
+        brand=product.brand,
+        quantity=None,
+        images=True,
+    )
+
 
 def ai_normalize_product(product: ProductData) -> AiNormalizedProduct:
     """
-    Call Gemini HTTP API to normalize ProductData into AiNormalizedProduct.
-    Uses ALL scraped text (especially technical_details and description).
-    Falls back to scraped fields if missing or on HTTP errors.
+    Heuristic 'AI' using only scraped data:
+    - parses technical_details for known keys
+    - fills AiNormalizedProduct fields accordingly
     """
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        return AiNormalizedProduct(
-            category="all",
-            seller=product.seller,
-            price=product.price.deal if product.price else None,
-            returns=product.returns,
-            delivery=product.delivery,
-            origin=product.country_of_origin,
-            brand=product.brand,
-            quantity=None,
-            images=True,
-        )
+    tech_map = parse_technical_details(product.technical_details or "")
 
-    url = (
-        "https://generativelanguage.googleapis.com/v1/"
-        "models/gemini-2.0-flash:generateContent"
+    # Brand
+    brand = product.brand
+    if not brand:
+        brand = tech_map.get("brand") or tech_map.get("brand name")
+
+    # Origin
+    origin = product.country_of_origin
+    if not origin:
+        origin = tech_map.get("country of origin") or tech_map.get("country as labeled")
+
+    # Manufacturer
+    manufacturer = product.manufacturer
+    if not manufacturer:
+        manufacturer = tech_map.get("manufacturer")
+
+    # Model number
+    model_number = tech_map.get("item model number") or tech_map.get("model number")
+
+    # Quantity: try to detect "100 ml", "50 g", etc.
+    quantity = None
+    text_for_qty = (product.technical_details or "") + " " + (product.description or "")
+    m_qty = re.search(r"(\d+(\.\d+)?)\s*(ml|g|kg|l|L)", text_for_qty)
+    if m_qty:
+        quantity = f"{m_qty.group(1)} {m_qty.group(3)}"
+
+    # Basic category guess from title
+    title_lower = (product.title or "").lower()
+    if any(w in title_lower for w in ["laptop", "phone", "tv", "headphone", "earbud"]):
+        category = "electronics"
+    elif any(w in title_lower for w in ["biscuit", "chips", "juice", "chocolate", "snack"]):
+        category = "food"
+    elif any(w in title_lower for w in ["sunscreen", "cream", "lotion", "tablet", "capsule", "syrup"]):
+        category = "health"
+    else:
+        category = "all"
+
+    return AiNormalizedProduct(
+        category=category,
+        seller=product.seller,
+        seller_contact=None,
+        seller_address=None,
+        price=product.price.deal if product.price else None,
+        charges=None,
+        returns=product.returns,
+        delivery=product.delivery,
+        origin=origin,
+        grievance=None,
+        description=product.description,
+        reviews=None,
+        title=product.title,
+        brand=brand,
+        quantity=quantity,
+        images=True,
+        warranty=product.warranty,
+        specifications=product.technical_details,
+        voltage=None,
+        safety=None,
+        energy_rating=None,
+        model_number=model_number,
+        compatibility=None,
+        expiry=None,
+        ingredients=None,
+        fssai=None,
+        allergen=None,
+        veg_nonveg=None,
+        storage=None,
+        manufacturer=manufacturer,
+        nutrition=None,
+        disclaimer=None,
+        dosage=None,
+        guaranteed=None,
+        usage=None,
+        warning=None,
+        age_limit=None,
+        prescription_required=None,
     )
-
-    # Build a lighter JSON for the prompt
-    product_json = {
-        "url": product.url,
-        "title": product.title,
-        "brand": product.brand,
-        "seller": product.seller,
-        "price": product.price.model_dump() if product.price else None,
-        "returns": product.returns,
-        "delivery": product.delivery,
-        "description": product.description,
-        "manufacturer": product.manufacturer,
-        "country_of_origin": product.country_of_origin,
-        "technical_details": product.technical_details,
-    }
-
-    prompt = (
-        "You are a compliance assistant for Indian e-commerce rules.\n"
-        "You are given a ProductData JSON scraped from an e-commerce site.\n"
-        "Use ALL of these fields, especially 'technical_details' and 'description', "
-        "to fill an AiNormalizedProduct JSON.\n\n"
-        "From this data, extract when possible:\n"
-        "- brand (e.g. 'LAKMÉ').\n"
-        "- quantity as a string, including unit when obvious (e.g. '100 ml').\n"
-        "- expiry as text (e.g. '05 MAY 2027').\n"
-        "- ingredients: a comma-separated list of ingredients if present.\n"
-        "- usage: short description of how to use or key benefits.\n"
-        "- warning: short safety warnings.\n"
-        "- seller: main seller name.\n"
-        "- seller_contact: manufacturer/importer contact or phone/email.\n"
-        "- seller_address: address from manufacturer/importer/packer if clearly present.\n"
-        "- origin: country of origin (e.g. 'India').\n"
-        "- returns: short return/returnable text.\n"
-        "- delivery: short phrase like 'Free delivery'.\n"
-        "- grievance: long manufacturer/importer/grievance contact.\n"
-        "- manufacturer: manufacturer name.\n"
-        "- nutrition: nutrition information for food items.\n"
-        "- category: 'electronics' for phones/laptops/TVs; 'food' for snacks/drinks; "
-        "  'health' for medicines/supplements/cosmetics; otherwise 'all'.\n\n"
-        "VERY IMPORTANT RULES:\n"
-        "- Only use text present in the ProductData JSON.\n"
-        "- Do NOT invent values. If something is not clearly present, set it to null.\n"
-        "- If multiple candidates exist, pick the clearest or most complete.\n\n"
-        "OUTPUT FORMAT (THIS IS CRITICAL):\n"
-        "- Return ONLY one JSON object with exactly these keys:\n"
-        "  category, seller, seller_contact, seller_address, price, charges,\n"
-        "  returns, delivery, origin, grievance, description, reviews, title,\n"
-        "  brand, quantity, images, warranty, specifications, voltage, safety,\n"
-        "  energy_rating, model_number, compatibility, expiry, ingredients,\n"
-        "  fssai, allergen, veg_nonveg, storage, manufacturer, nutrition,\n"
-        "  disclaimer, dosage, guaranteed, usage, warning, age_limit,\n"
-        "  prescription_required.\n"
-        "- All keys must be present. If a value is unknown, set it to null.\n"
-        "- Do NOT wrap the JSON in markdown. No ``` fences.\n\n"
-        f"ProductData JSON:\n{json.dumps(product_json, ensure_ascii=False)}\n"
-    )
-
-    body = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": prompt}
-                ]
-            }
-        ]
-    }
-
-    params = {"key": api_key}
-    headers = {"Content-Type": "application/json"}
-
-    try:
-        resp = requests.post(url, params=params, headers=headers, json=body, timeout=20)
-        print("GEMINI STATUS:", resp.status_code)
-        print("GEMINI BODY:", resp.text[:1000])
-        resp.raise_for_status()
-    except requests.HTTPError as e:
-        print("GEMINI ERROR:", e)
-        return AiNormalizedProduct(
-            category="all",
-            seller=product.seller,
-            price=product.price.deal if product.price else None,
-            returns=product.returns,
-            delivery=product.delivery,
-            origin=product.country_of_origin,
-            brand=product.brand,
-            quantity=None,
-            images=True,
-        )
-
-    result = resp.json()
-    try:
-        text = result["candidates"]["content"]["parts"]["text"].strip()
-    except Exception as e:
-        print("GEMINI PARSE ERROR:", e, result)
-        return AiNormalizedProduct(
-            category="all",
-            seller=product.seller,
-            price=product.price.deal if product.price else None,
-            returns=product.returns,
-            delivery=product.delivery,
-            origin=product.country_of_origin,
-            brand=product.brand,
-            quantity=None,
-            images=True,
-        )
-
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.lower().startswith("json"):
-            text = text[4:].strip()
-
-    print("GEMINI RAW TEXT:", repr(text[:500]))
-
-    data = json.loads(text)
-    return AiNormalizedProduct(**data)
-
 
 
 def merge_ai_into_product(product: ProductData, ai: AiNormalizedProduct) -> ProductData:
@@ -289,15 +271,14 @@ def merge_ai_into_product(product: ProductData, ai: AiNormalizedProduct) -> Prod
     if ai.grievance:
         data.grievance_officer_details = ai.grievance
 
-    # Returns and delivery (AI may refine short text)
+    # Returns and delivery
     if ai.returns:
         data.returns = ai.returns
     if ai.delivery:
         data.delivery = ai.delivery
 
-    # Price (if AI parsed numeric price)
+    # Price
     if ai.price is not None:
-        # keep mrp as-is, but override deal / total_price with AI if present
         if data.price is not None:
             data.price.deal = ai.price
         data.total_price = ai.price
@@ -372,12 +353,6 @@ def run_compliance_check(product: ProductData, ai_product: AiNormalizedProduct) 
     Filter rules by category from AI (electronics/food/health/all).
     """
     field_values = build_field_index_ai(product, ai_product)
-=======
-def run_compliance_check(product: ProductData) -> dict:
-    product_category = infer_product_category(product)
-    field_values = build_field_index(product)
-
->>>>>>> 5a5c19f1d898072ecfb9197fedb2fe34be61a204
     violations: list[Violation] = []
 
     category = (ai_product.category or "all").lower()
@@ -386,7 +361,6 @@ def run_compliance_check(product: ProductData) -> dict:
     is_health = category == "health"
 
     for rule in RULES:
-<<<<<<< HEAD
         rule_id = rule["id"]
         severity = rule["severity"]
         title_text = rule["title"]
@@ -405,39 +379,15 @@ def run_compliance_check(product: ProductData) -> dict:
         if missing:
             description = f"{title_text} – missing or unclear: {', '.join(missing)}"
             suggestion = f"Ensure the following field(s) are clearly disclosed: {', '.join(missing)}."
-=======
-        rule_category = rule.get("category", "all")
-
-        # 🔥 CATEGORY FILTER (THIS IS THE FIX)
-        if rule_category != "all" and rule_category != product_category:
-            continue
-
-        missing = []
-        for f in rule.get("required_fields", []):
-            if not field_values.get(f, False):
-                missing.append(f)
-
-        if missing:
->>>>>>> 5a5c19f1d898072ecfb9197fedb2fe34be61a204
             violations.append(
                 Violation(
-                    rule_id=rule["id"],
-                    severity=rule["severity"],
-                    description=(
-                        f"{rule['title']} – missing or unclear: "
-                        f"{', '.join(missing)}"
-                    ),
-                    suggestion=(
-                        f"Ensure the following field(s) are clearly disclosed: "
-                        f"{', '.join(missing)}."
-                    ),
+                    rule_id=rule_id,
+                    severity=severity,
+                    description=description,
+                    suggestion=suggestion,
                 )
             )
 
-<<<<<<< HEAD
-=======
-    # score calculation stays the same
->>>>>>> 5a5c19f1d898072ecfb9197fedb2fe34be61a204
     score = 100
     for v in violations:
         if v.severity.upper() == "HIGH":
@@ -487,7 +437,6 @@ def compute_trust_index(product: ProductData, violations: list[Violation]) -> di
     return {"score": score, "reasons": reasons}
 
 
-
 @app.post("/scan", response_model=ScanResult)
 def scan_endpoint(request: ScanRequest, db: Session = Depends(get_db)):
     url = request.url
@@ -496,14 +445,18 @@ def scan_endpoint(request: ScanRequest, db: Session = Depends(get_db)):
     html = _fetch_html(url)
     product = scrape_product(url)
 
-    # 1.5 AI-normalized product (Gemini)
-    ai_product = ai_normalize_product(product)
+    # 1.5 Heuristic-normalized product
+    if USE_AI:
+        ai_product = ai_normalize_product(product)
+    else:
+        ai_product = fallback_ai(product)
+
     print("AI PRODUCT:", ai_product.dict())
 
-    # 1.6 Merge AI into product for rich view
+    # 1.6 Merge into product for rich view
     normalized_product = merge_ai_into_product(product, ai_product)
 
-    # 2. Rule-based compliance using rules.py (with AI normalization)
+    # 2. Rule-based compliance
     compliance_result = run_compliance_check(product, ai_product)
     base_violations = compliance_result["violations"]
 
@@ -521,7 +474,7 @@ def scan_endpoint(request: ScanRequest, db: Session = Depends(get_db)):
 
     all_violations = base_violations + dark_violations
 
-    # 4. Risk score from violations
+    # 4. Risk score
     risk = 100
     for v in all_violations:
         if v.severity.upper() == "HIGH":
@@ -535,7 +488,7 @@ def scan_endpoint(request: ScanRequest, db: Session = Depends(get_db)):
     # 5. Trust index
     trust_index = compute_trust_index(product, all_violations)
 
-    # 6. Build result (IMPORTANT: use normalized_product here)
+    # 6. Build result
     result = ScanResult(
         timestamp=datetime.utcnow(),
         product=normalized_product,
@@ -561,7 +514,6 @@ def scan_endpoint(request: ScanRequest, db: Session = Depends(get_db)):
     result.id = db_record.id
 
     return result
-
 
 
 @app.get("/history")
