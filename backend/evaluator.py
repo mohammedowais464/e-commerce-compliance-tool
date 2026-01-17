@@ -6,30 +6,26 @@ from rules import RULES
 from scraper import scrape_product
 
 
-# =====================================================
-# PUBLIC ENTRY POINT
-# =====================================================
-
+# 🔹 PUBLIC ENTRY POINT
 def evaluate_url(url: str) -> ScanResult:
     """
-    Main entry point.
-    main.py or API should call ONLY this.
+    SINGLE ENTRY POINT
+    main.py should call ONLY this
     """
-    print(f"🔍 Scraping product: {url}")
+    print(f"🔍 Scraping product from URL: {url}")
     product = scrape_product(url)
 
-    print("⚖️ Evaluating compliance...")
+    print("⚖️ Running compliance evaluation...")
     return evaluate_compliance(product)
 
 
-# =====================================================
-# CORE EVALUATION
-# =====================================================
-
 def evaluate_compliance(product: ProductData) -> ScanResult:
+    """
+    MAIN FUNCTION – evaluates scraped ProductData
+    """
     violations_data = []
 
-    relevant_rules = _get_relevant_rules()
+    relevant_rules = _get_relevant_rules(product)
 
     for rule in relevant_rules:
         violation = _check_rule_against_product(rule, product)
@@ -57,53 +53,39 @@ def evaluate_compliance(product: ProductData) -> ScanResult:
     )
 
 
-# =====================================================
-# RULE SELECTION
-# =====================================================
-
-def _get_relevant_rules() -> List[Dict]:
+def _get_relevant_rules(product: ProductData) -> List[Dict]:
     """
-    For now, apply only GENERAL E-COMMERCE rules.
-    (Food / Health / Electronics can be added later)
+    Filter rules to general e-commerce rules only
     """
-    return [
-        r for r in RULES
-        if r["category"] == "all"
-    ]
+    core_rule_ids = ["EC-01", "EC-04", "EC-06", "EC-07", "EC-09"]
+    selected = []
 
+    for rule in RULES:
+        if rule["id"] in core_rule_ids or rule["category"] == "all":
+            selected.append(rule)
 
-# RULE CHECKING
+    return selected[:8]
+
 
 def _check_rule_against_product(rule: Dict, product: ProductData) -> Dict | None:
     """
-    Checks ONE rule against scraped ProductData.
-    Only validates fields that scraper actually provides.
+    Maps ProductData → rule required_fields
+    ONLY uses fields that scraper actually provides
     """
 
-    # Map rule keywords → actual ProductData fields
     field_mapping = {
-        "title": product.title,
         "seller": product.seller,
         "price": product.price,
-        "returns": product.returns,
         "description": product.description,
-        "technical_details": product.technical_details,
-        "brand": product.brand,
-        "delivery": product.delivery,
-        "warranty": product.warranty,
+        "returns": product.returns,
+        "technical_details": getattr(product, "technical_details", None),
     }
 
     missing_fields = []
 
     for required_field in rule.get("required_fields", []):
-
-        # If evaluator doesn’t support this field yet, skip it
-        if required_field not in field_mapping:
-            continue
-
         value = field_mapping.get(required_field)
 
-        # Missing or empty
         if value is None:
             missing_fields.append(required_field)
         elif isinstance(value, str) and not value.strip():
@@ -114,23 +96,21 @@ def _check_rule_against_product(rule: Dict, product: ProductData) -> Dict | None
             "rule_id": rule["id"],
             "severity": rule["severity"],
             "description": f"{rule['title']} [{rule['law']}]",
-            "suggestion": (
-                f"Ensure {', '.join(missing_fields)} "
-                f"is clearly displayed on the product page"
-            )
+            "suggestion": f"Display {', '.join(missing_fields)} clearly on product page"
         }
 
     return None
 
 
-
-
 def _calculate_risk_score(violations_data: List[Dict]) -> int:
+    """
+    Maps violations → risk score (1–10)
+    """
     if not violations_data:
         return 1
 
-    severity_weights = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
-    total = sum(severity_weights.get(v["severity"], 1) for v in violations_data)
+    weights = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
+    total = sum(weights.get(v["severity"], 1) for v in violations_data)
 
     avg = total / len(violations_data)
     return min(10, max(1, int(avg * 2.5)))
